@@ -8,7 +8,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
@@ -21,6 +21,7 @@ struct Args {
 #[derive(Debug, Clone, Deserialize)]
 pub struct Options {
     show_dmesg: Option<bool>,
+    success_file: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -80,14 +81,34 @@ fn main() -> Result<()> {
     }
 
     println!("Overlay mount setup complete.");
+    match post_mount(running, options.success_file) {
+        Ok(_) => manager.umount().context("Error during cleanup"),
+        Err(run_err) => match manager.umount() {
+            Ok(_) => Err(run_err).context("Error during maintenance loop"),
+            Err(umount_err) => Err(umount_err)
+                .context("failed umount")
+                .with_context(|| format!("after getting error: {run_err:?}")),
+        },
+    }
+}
+
+fn post_mount(running: Arc<AtomicBool>, success_file: Option<PathBuf>) -> Result<()> {
+    // Create success file if specified
+    if let Some(success_file) = &success_file {
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .context("Failed to get current time")?
+            .as_secs();
+
+        fs::write(success_file, timestamp.to_string())
+            .with_context(|| format!("Failed to write success file: {success_file:?}"))?;
+
+        println!("Success file created: {success_file:?}");
+    }
     // Keep the program running until interrupted
     while running.load(Ordering::SeqCst) {
         thread::sleep(Duration::from_millis(200));
     }
-
-    // Cleanup
-    println!("Exiting gracefully...");
-    manager.umount().context("Error during cleanup")?;
 
     Ok(())
 }
