@@ -195,3 +195,352 @@ impl MountConfig {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use tempfile::TempDir;
+
+    fn create_test_file(dir: &Path, relative_path: &str, content: &str) -> PathBuf {
+        let file_path = dir.join(relative_path);
+        if let Some(parent) = file_path.parent() {
+            fs::create_dir_all(parent).unwrap();
+        }
+        fs::write(&file_path, content).unwrap();
+        file_path
+    }
+
+    #[test]
+    fn test_lower_dir_new_valid() {
+        let temp_dir = TempDir::new().unwrap();
+        let volume = temp_dir.path().join("volume");
+        let subdir = Some(PathBuf::from("subdir"));
+
+        let lower_dir = LowerDir::new(volume.clone(), subdir.clone()).unwrap();
+        assert_eq!(lower_dir.volume, volume);
+        assert_eq!(lower_dir.subdir, subdir);
+    }
+
+    #[test]
+    fn test_lower_dir_new_absolute_subdir_fails() {
+        let temp_dir = TempDir::new().unwrap();
+        let volume = temp_dir.path().join("volume");
+        let subdir = Some(PathBuf::from("/absolute/path"));
+
+        let result = LowerDir::new(volume, subdir);
+        assert!(matches!(result, Err(ValidationError::NonRelative(_, _))));
+    }
+
+    #[test]
+    fn test_lower_dir_full_path() {
+        let temp_dir = TempDir::new().unwrap();
+        let volume = temp_dir.path().join("volume");
+        let subdir = Some(PathBuf::from("subdir"));
+
+        let lower_dir = LowerDir::new(volume.clone(), subdir).unwrap();
+        assert_eq!(lower_dir.full_path(), volume.join("subdir"));
+    }
+
+    #[test]
+    fn test_lower_dir_full_path_no_subdir() {
+        let temp_dir = TempDir::new().unwrap();
+        let volume = temp_dir.path().join("volume");
+
+        let lower_dir = LowerDir::new(volume.clone(), None).unwrap();
+        assert_eq!(lower_dir.full_path(), volume);
+    }
+
+    #[test]
+    fn test_upper_dir_new_valid() {
+        let temp_dir = TempDir::new().unwrap();
+        let volume = temp_dir.path().join("volume");
+        let upper_subdir = PathBuf::from("upper");
+        let work_subdir = PathBuf::from("work");
+        let merged_subdir = PathBuf::from("merged");
+
+        let upper_dir = UpperDir::new(
+            volume.clone(),
+            upper_subdir.clone(),
+            work_subdir.clone(),
+            merged_subdir.clone(),
+        )
+        .unwrap();
+
+        assert_eq!(upper_dir.volume, volume);
+        assert_eq!(upper_dir.upper_subdir, upper_subdir);
+        assert_eq!(upper_dir.work_subdir, work_subdir);
+        assert_eq!(upper_dir.merged_subdir, merged_subdir);
+    }
+
+    #[test]
+    fn test_upper_dir_new_absolute_paths_fail() {
+        let temp_dir = TempDir::new().unwrap();
+        let volume = temp_dir.path().join("volume");
+        let absolute_path = PathBuf::from("/absolute/path");
+
+        // Test absolute upper_subdir
+        let result = UpperDir::new(
+            volume.clone(),
+            absolute_path.clone(),
+            PathBuf::from("work"),
+            PathBuf::from("merged"),
+        );
+        assert!(matches!(result, Err(ValidationError::NonRelative(_, _))));
+
+        // Test absolute work_subdir
+        let result = UpperDir::new(
+            volume.clone(),
+            PathBuf::from("upper"),
+            absolute_path.clone(),
+            PathBuf::from("merged"),
+        );
+        assert!(matches!(result, Err(ValidationError::NonRelative(_, _))));
+
+        // Test absolute merged_subdir
+        let result = UpperDir::new(
+            volume.clone(),
+            PathBuf::from("upper"),
+            PathBuf::from("work"),
+            absolute_path,
+        );
+        assert!(matches!(result, Err(ValidationError::NonRelative(_, _))));
+    }
+
+    #[test]
+    fn test_upper_dir_paths() {
+        let temp_dir = TempDir::new().unwrap();
+        let volume = temp_dir.path().join("volume");
+        let upper_dir = UpperDir::new(
+            volume.clone(),
+            PathBuf::from("upper"),
+            PathBuf::from("work"),
+            PathBuf::from("merged"),
+        )
+        .unwrap();
+
+        assert_eq!(upper_dir.upper_path(), volume.join("upper"));
+        assert_eq!(upper_dir.work_path(), volume.join("work"));
+        assert_eq!(upper_dir.merged_path(), volume.join("merged"));
+    }
+
+    #[test]
+    fn test_mount_config_create_directories() {
+        let temp_dir = TempDir::new().unwrap();
+        let volume = temp_dir.path().to_path_buf();
+
+        let lower_dir = LowerDir::new(volume.join("lower"), None).unwrap();
+        let upper_dir = UpperDir::new(
+            volume.clone(),
+            PathBuf::from("upper"),
+            PathBuf::from("work"),
+            PathBuf::from("merged"),
+        )
+        .unwrap();
+
+        let config = MountConfig {
+            lower_dirs: vec![lower_dir],
+            upper_dir,
+        };
+
+        config.create_directories().unwrap();
+
+        assert!(volume.join("upper").exists());
+        assert!(volume.join("work").exists());
+        assert!(volume.join("merged").exists());
+    }
+
+    #[test]
+    fn test_mount_config_no_masked_files() {
+        let temp_dir = TempDir::new().unwrap();
+        let volume = temp_dir.path().to_path_buf();
+
+        // Create lower directory with some files
+        let lower_path = volume.join("lower");
+        fs::create_dir_all(&lower_path).unwrap();
+        create_test_file(&lower_path, "config.txt", "lower config");
+        create_test_file(&lower_path, "subdir/nested.txt", "nested file");
+
+        let lower_dir = LowerDir::new(lower_path, None).unwrap();
+        let upper_dir = UpperDir::new(
+            volume.clone(),
+            PathBuf::from("upper"),
+            PathBuf::from("work"),
+            PathBuf::from("merged"),
+        )
+        .unwrap();
+
+        let config = MountConfig {
+            lower_dirs: vec![lower_dir],
+            upper_dir,
+        };
+
+        let validated = config.validate().unwrap();
+        assert!(matches!(validated, ValidatedMountConfig(_)));
+    }
+
+    #[test]
+    fn test_mount_config_with_masked_files() {
+        let temp_dir = TempDir::new().unwrap();
+        let volume = temp_dir.path().to_path_buf();
+
+        // Create lower directory with some files
+        let lower_path = volume.join("lower");
+        fs::create_dir_all(&lower_path).unwrap();
+        create_test_file(&lower_path, "config.txt", "lower config");
+        create_test_file(&lower_path, "subdir/nested.txt", "nested file");
+
+        // Create upper directory with overlapping files
+        let upper_path = volume.join("upper");
+        fs::create_dir_all(&upper_path).unwrap();
+        create_test_file(&upper_path, "config.txt", "upper config");
+
+        let lower_dir = LowerDir::new(lower_path, None).unwrap();
+        let upper_dir = UpperDir::new(
+            volume.clone(),
+            PathBuf::from("upper"),
+            PathBuf::from("work"),
+            PathBuf::from("merged"),
+        )
+        .unwrap();
+
+        let config = MountConfig {
+            lower_dirs: vec![lower_dir],
+            upper_dir,
+        };
+
+        let result = config.validate();
+        assert!(matches!(
+            result,
+            Err(ConfigError::ValidationError(ValidationError::MaskedFiles(
+                _
+            )))
+        ));
+
+        if let Err(ConfigError::ValidationError(ValidationError::MaskedFiles(masked_files))) =
+            result
+        {
+            assert_eq!(masked_files.len(), 1);
+            assert!(masked_files[0].ends_with("config.txt"));
+        }
+    }
+
+    #[test]
+    fn test_mount_config_multiple_lower_dirs() {
+        let temp_dir = TempDir::new().unwrap();
+        let volume = temp_dir.path().to_path_buf();
+
+        // Create first lower directory
+        let lower1_path = volume.join("lower1");
+        fs::create_dir_all(&lower1_path).unwrap();
+        create_test_file(&lower1_path, "file1.txt", "content1");
+
+        // Create second lower directory
+        let lower2_path = volume.join("lower2");
+        fs::create_dir_all(&lower2_path).unwrap();
+        create_test_file(&lower2_path, "file2.txt", "content2");
+
+        // Create upper directory with file that masks lower1
+        let upper_path = volume.join("upper");
+        fs::create_dir_all(&upper_path).unwrap();
+        create_test_file(&upper_path, "file1.txt", "upper content");
+
+        let lower_dir1 = LowerDir::new(lower1_path, None).unwrap();
+        let lower_dir2 = LowerDir::new(lower2_path, None).unwrap();
+        let upper_dir = UpperDir::new(
+            volume.clone(),
+            PathBuf::from("upper"),
+            PathBuf::from("work"),
+            PathBuf::from("merged"),
+        )
+        .unwrap();
+
+        let config = MountConfig {
+            lower_dirs: vec![lower_dir1, lower_dir2],
+            upper_dir,
+        };
+
+        let result = config.validate();
+        assert!(matches!(
+            result,
+            Err(ConfigError::ValidationError(ValidationError::MaskedFiles(
+                _
+            )))
+        ));
+    }
+
+    #[test]
+    fn test_mount_config_with_subdirs() {
+        let temp_dir = TempDir::new().unwrap();
+        let volume = temp_dir.path().to_path_buf();
+
+        // Create lower directory with subdir
+        let lower_base = volume.join("lower_base");
+        let lower_subdir_path = lower_base.join("subdir");
+        fs::create_dir_all(&lower_subdir_path).unwrap();
+        create_test_file(&lower_subdir_path, "config.txt", "lower config");
+
+        let lower_dir = LowerDir::new(lower_base, Some(PathBuf::from("subdir"))).unwrap();
+        let upper_dir = UpperDir::new(
+            volume.clone(),
+            PathBuf::from("upper"),
+            PathBuf::from("work"),
+            PathBuf::from("merged"),
+        )
+        .unwrap();
+
+        let config = MountConfig {
+            lower_dirs: vec![lower_dir],
+            upper_dir,
+        };
+
+        let validated = config.validate().unwrap();
+        assert!(matches!(validated, ValidatedMountConfig(_)));
+    }
+
+    #[test]
+    fn test_collect_file_paths() {
+        let temp_dir = TempDir::new().unwrap();
+        let base_path = temp_dir.path();
+
+        // Create a directory structure
+        create_test_file(base_path, "file1.txt", "content1");
+        create_test_file(base_path, "subdir/file2.txt", "content2");
+        create_test_file(base_path, "subdir/nested/file3.txt", "content3");
+
+        let mut file_paths = std::collections::HashSet::new();
+        MountConfig::collect_file_paths(base_path, base_path, &mut file_paths).unwrap();
+
+        assert_eq!(file_paths.len(), 3);
+        assert!(file_paths.contains(&PathBuf::from("file1.txt")));
+        assert!(file_paths.contains(&PathBuf::from("subdir/file2.txt")));
+        assert!(file_paths.contains(&PathBuf::from("subdir/nested/file3.txt")));
+    }
+
+    #[test]
+    fn test_validated_mount_config_conversion() {
+        let temp_dir = TempDir::new().unwrap();
+        let volume = temp_dir.path().to_path_buf();
+
+        let lower_dir = LowerDir::new(volume.join("lower"), None).unwrap();
+        let upper_dir = UpperDir::new(
+            volume.clone(),
+            PathBuf::from("upper"),
+            PathBuf::from("work"),
+            PathBuf::from("merged"),
+        )
+        .unwrap();
+
+        let original_config = MountConfig {
+            lower_dirs: vec![lower_dir.clone()],
+            upper_dir: upper_dir.clone(),
+        };
+
+        let validated = original_config.validate().unwrap();
+        let converted_config: MountConfig = validated.into();
+
+        assert_eq!(converted_config.lower_dirs.len(), 1);
+        assert_eq!(converted_config.lower_dirs[0].volume, lower_dir.volume);
+        assert_eq!(converted_config.upper_dir.volume, upper_dir.volume);
+    }
+}
