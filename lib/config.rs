@@ -1,3 +1,4 @@
+use crate::rsync::SyncMode;
 use serde::Deserialize;
 use std::fs;
 use std::io;
@@ -35,10 +36,18 @@ impl From<ValidatedMountConfig> for MountConfig {
     }
 }
 
+impl<'a> From<&'a ValidatedMountConfig> for &'a MountConfig {
+    fn from(config: &'a ValidatedMountConfig) -> Self {
+        &config.0
+    }
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct LowerDir {
     volume: PathBuf,
     subdir: Option<PathBuf>,
+    #[serde(default)]
+    sync_mode: SyncMode,
 }
 
 fn enforce_relative(volume: &Path, subdir: Option<&PathBuf>) -> Result<(), ValidationError> {
@@ -56,13 +65,41 @@ fn enforce_relative(volume: &Path, subdir: Option<&PathBuf>) -> Result<(), Valid
 impl LowerDir {
     pub fn new(volume: PathBuf, subdir: Option<PathBuf>) -> Result<Self, ValidationError> {
         enforce_relative(&volume, subdir.as_ref())?;
-        Ok(Self { volume, subdir })
+        Ok(Self {
+            volume,
+            subdir,
+            sync_mode: SyncMode::None,
+        })
+    }
+
+    pub fn new_with_sync(
+        volume: PathBuf,
+        subdir: Option<PathBuf>,
+        sync_mode: SyncMode,
+    ) -> Result<Self, ValidationError> {
+        enforce_relative(&volume, subdir.as_ref())?;
+        Ok(Self {
+            volume,
+            subdir,
+            sync_mode,
+        })
     }
 
     pub fn full_path(&self) -> PathBuf {
         match &self.subdir {
             Some(subdir) => self.volume.join(subdir),
             None => self.volume.clone(),
+        }
+    }
+
+    pub fn sync_mode(&self) -> &SyncMode {
+        &self.sync_mode
+    }
+
+    pub fn mount_path(&self) -> PathBuf {
+        match &self.sync_mode {
+            SyncMode::None => self.full_path(),
+            SyncMode::Once(target) | SyncMode::Constant(target) => target.clone(),
         }
     }
 }
@@ -107,6 +144,7 @@ impl UpperDir {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[non_exhaustive]
 pub struct MountConfig {
     pub lower_dirs: Vec<LowerDir>,
     pub upper_dir: UpperDir,
