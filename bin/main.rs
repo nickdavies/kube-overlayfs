@@ -1,6 +1,5 @@
 use anyhow::{Context, Result};
 use clap::Parser;
-use overlay_mount::{OverlayManager, config::MountConfig};
 use serde::Deserialize;
 use signal_hook::{consts::SIGINT, consts::SIGTERM, iterator::Signals};
 use std::fs;
@@ -9,6 +8,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+use overlay_mount::{OverlayManager, config::MountConfig, rsync::SyncManager, rsync::SyncResult};
 
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
@@ -22,6 +23,18 @@ struct Args {
 pub struct Options {
     show_dmesg: Option<bool>,
     success_file: Option<PathBuf>,
+    #[serde(default = "default_resync_interval")]
+    resync_interval_seconds: u64,
+    #[serde(default = "default_sync_timeout")]
+    sync_timeout_seconds: u64,
+}
+
+fn default_resync_interval() -> u64 {
+    300 // 5 minutes
+}
+
+fn default_sync_timeout() -> u64 {
+    1800 // 30 minutes
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -64,8 +77,14 @@ fn main() -> Result<()> {
         .validate()
         .context("Failed to validate config")?;
 
-    let manager =
-        OverlayManager::new(validated_config).context("Failed to create overlay manager")?;
+    let (mut sync_manager, synced_config) = match SyncManager::new(validated_config) {
+        Ok(res) => res,
+        Err((path, err)) => {
+            return Err(err).context(format!("failed to sync: {path:?}"));
+        }
+    };
+
+    let manager = OverlayManager::new(synced_config).context("Failed to create overlay manager")?;
 
     // Mount the overlay
     if let Err(e) = manager.mount() {
@@ -81,7 +100,7 @@ fn main() -> Result<()> {
     }
 
     println!("Overlay mount setup complete.");
-    match post_mount(running, options.success_file) {
+    match post_mount(running, options, &mut sync_manager) {
         Ok(_) => manager.umount().context("Error during cleanup"),
         Err(run_err) => match manager.umount() {
             Ok(_) => Err(run_err).context("Error during maintenance loop"),
@@ -92,9 +111,13 @@ fn main() -> Result<()> {
     }
 }
 
-fn post_mount(running: Arc<AtomicBool>, success_file: Option<PathBuf>) -> Result<()> {
+fn post_mount(
+    running: Arc<AtomicBool>,
+    options: Options,
+    sync_manager: &mut SyncManager,
+) -> Result<()> {
     // Create success file if specified
-    if let Some(success_file) = &success_file {
+    if let Some(success_file) = &options.success_file {
         let timestamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .context("Failed to get current time")?
@@ -105,9 +128,32 @@ fn post_mount(running: Arc<AtomicBool>, success_file: Option<PathBuf>) -> Result
 
         println!("Success file created: {success_file:?}");
     }
+
+    let resync_interval = Duration::from_secs(options.resync_interval_seconds);
+    let sync_timeout = Duration::from_secs(options.sync_timeout_seconds);
+    let mut last_sync = SystemTime::now();
+
     // Keep the program running until interrupted
     while running.load(Ordering::SeqCst) {
         thread::sleep(Duration::from_millis(200));
+
+        // Check if it's time to resync
+        if last_sync.elapsed().unwrap_or(Duration::ZERO) >= resync_interval {
+            for (path, res) in sync_manager.try_sync(sync_timeout) {
+                match res {
+                    SyncResult::Ok => {
+                        println!("Successfully synced: '{path:?}'");
+                    }
+                    SyncResult::Transient(e) => {
+                        println!("Transient sync failure for '{path:?}': {e}");
+                    }
+                    SyncResult::Fatal(e) => {
+                        return Err(e).context(format!("failed repeatedly to sync '{path:?}'"));
+                    }
+                }
+            }
+            last_sync = SystemTime::now();
+        }
     }
 
     Ok(())

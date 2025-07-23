@@ -2,9 +2,11 @@ use nix::mount::{MsFlags, mount, umount};
 use std::io;
 use std::process::Command;
 
-use config::{MountConfig, ValidatedMountConfig};
+use config::MountConfig;
+use rsync::SyncedConfig;
 
 pub mod config;
+pub mod rsync;
 
 #[derive(thiserror::Error, Debug)]
 pub enum ManagerError {
@@ -19,7 +21,7 @@ pub struct OverlayManager {
 }
 
 impl OverlayManager {
-    pub fn new(config: ValidatedMountConfig) -> Result<Self, ManagerError> {
+    pub fn new(config: SyncedConfig) -> Result<Self, ManagerError> {
         Ok(OverlayManager {
             config: config.into(),
         })
@@ -31,7 +33,7 @@ impl OverlayManager {
             .config
             .lower_dirs
             .iter()
-            .map(|lower| lower.full_path().display().to_string())
+            .map(|lower| lower.mount_path().display().to_string())
             .collect::<Vec<_>>()
             .join(":");
 
