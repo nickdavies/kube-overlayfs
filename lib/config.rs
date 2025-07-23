@@ -1,8 +1,10 @@
-use crate::rsync::SyncMode;
 use serde::Deserialize;
+use std::collections::BTreeSet;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
+
+use crate::rsync::SyncMode;
 
 #[derive(thiserror::Error, Debug)]
 #[error("IO Error at '{0:?}': {1}")]
@@ -148,6 +150,8 @@ impl UpperDir {
 pub struct MountConfig {
     pub lower_dirs: Vec<LowerDir>,
     pub upper_dir: UpperDir,
+    #[serde(default)]
+    pub allowed_masked_files: BTreeSet<PathBuf>,
 }
 
 impl MountConfig {
@@ -206,7 +210,7 @@ impl MountConfig {
         // Check if any of these paths exist in upper layer
         for relative_path in lower_files {
             let upper_file_path = upper_path.join(&relative_path);
-            if upper_file_path.exists() {
+            if upper_file_path.exists() && !self.allowed_masked_files.contains(&relative_path) {
                 masked_files.push(upper_file_path);
             }
         }
@@ -379,6 +383,7 @@ mod tests {
         let config = MountConfig {
             lower_dirs: vec![lower_dir],
             upper_dir,
+            allowed_masked_files: BTreeSet::new(),
         };
 
         config.create_directories().unwrap();
@@ -411,6 +416,7 @@ mod tests {
         let config = MountConfig {
             lower_dirs: vec![lower_dir],
             upper_dir,
+            allowed_masked_files: BTreeSet::new(),
         };
 
         let validated = config.validate().unwrap();
@@ -445,6 +451,7 @@ mod tests {
         let config = MountConfig {
             lower_dirs: vec![lower_dir],
             upper_dir,
+            allowed_masked_files: BTreeSet::new(),
         };
 
         let result = config.validate();
@@ -496,6 +503,7 @@ mod tests {
         let config = MountConfig {
             lower_dirs: vec![lower_dir1, lower_dir2],
             upper_dir,
+            allowed_masked_files: BTreeSet::new(),
         };
 
         let result = config.validate();
@@ -530,6 +538,7 @@ mod tests {
         let config = MountConfig {
             lower_dirs: vec![lower_dir],
             upper_dir,
+            allowed_masked_files: BTreeSet::new(),
         };
 
         let validated = config.validate().unwrap();
@@ -556,6 +565,93 @@ mod tests {
     }
 
     #[test]
+    fn test_mount_config_with_allowed_masked_files() {
+        let temp_dir = TempDir::new().unwrap();
+        let volume = temp_dir.path().to_path_buf();
+
+        // Create lower directory with some files
+        let lower_path = volume.join("lower");
+        fs::create_dir_all(&lower_path).unwrap();
+        create_test_file(&lower_path, "config.txt", "lower config");
+        create_test_file(&lower_path, "allowed.txt", "allowed file");
+
+        // Create upper directory with overlapping files
+        let upper_path = volume.join("upper");
+        fs::create_dir_all(&upper_path).unwrap();
+        create_test_file(&upper_path, "config.txt", "upper config");
+        create_test_file(&upper_path, "allowed.txt", "upper allowed");
+
+        let lower_dir = LowerDir::new(lower_path, None).unwrap();
+        let upper_dir = UpperDir::new(
+            volume.clone(),
+            PathBuf::from("upper"),
+            PathBuf::from("work"),
+            PathBuf::from("merged"),
+        )
+        .unwrap();
+
+        let config = MountConfig {
+            lower_dirs: vec![lower_dir],
+            upper_dir,
+            allowed_masked_files: vec![PathBuf::from("allowed.txt")].into_iter().collect(),
+        };
+
+        let result = config.validate();
+        assert!(matches!(
+            result,
+            Err(ConfigError::ValidationError(ValidationError::MaskedFiles(
+                _
+            )))
+        ));
+
+        if let Err(ConfigError::ValidationError(ValidationError::MaskedFiles(masked_files))) =
+            result
+        {
+            assert_eq!(masked_files.len(), 1);
+            assert!(masked_files[0].ends_with("config.txt"));
+            assert!(!masked_files.iter().any(|p| p.ends_with("allowed.txt")));
+        }
+    }
+
+    #[test]
+    fn test_mount_config_all_files_allowed() {
+        let temp_dir = TempDir::new().unwrap();
+        let volume = temp_dir.path().to_path_buf();
+
+        // Create lower directory with some files
+        let lower_path = volume.join("lower");
+        fs::create_dir_all(&lower_path).unwrap();
+        create_test_file(&lower_path, "config.txt", "lower config");
+        create_test_file(&lower_path, "other.txt", "other file");
+
+        // Create upper directory with overlapping files
+        let upper_path = volume.join("upper");
+        fs::create_dir_all(&upper_path).unwrap();
+        create_test_file(&upper_path, "config.txt", "upper config");
+        create_test_file(&upper_path, "other.txt", "upper other");
+
+        let lower_dir = LowerDir::new(lower_path, None).unwrap();
+        let upper_dir = UpperDir::new(
+            volume.clone(),
+            PathBuf::from("upper"),
+            PathBuf::from("work"),
+            PathBuf::from("merged"),
+        )
+        .unwrap();
+
+        let config = MountConfig {
+            lower_dirs: vec![lower_dir],
+            upper_dir,
+            allowed_masked_files: vec![PathBuf::from("config.txt"), PathBuf::from("other.txt")]
+                .into_iter()
+                .collect(),
+        };
+
+        let validated = config.validate().unwrap();
+        assert!(matches!(validated, ValidatedMountConfig(_)));
+    }
+
+    #[test]
     fn test_validated_mount_config_conversion() {
         let temp_dir = TempDir::new().unwrap();
         let volume = temp_dir.path().to_path_buf();
@@ -572,6 +668,7 @@ mod tests {
         let original_config = MountConfig {
             lower_dirs: vec![lower_dir.clone()],
             upper_dir: upper_dir.clone(),
+            allowed_masked_files: BTreeSet::new(),
         };
 
         let validated = original_config.validate().unwrap();

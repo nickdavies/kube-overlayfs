@@ -1,8 +1,8 @@
-use serde::Deserialize;
-
 use std::path::PathBuf;
 use std::process::Command;
 use std::time::{Duration, Instant};
+
+use serde::Deserialize;
 use thiserror::Error;
 
 use crate::config::{IOErrorAtPath, LowerDir, MountConfig, ValidatedMountConfig};
@@ -131,6 +131,7 @@ impl DirSyncer {
 mod tests {
     use super::*;
     use crate::config::{LowerDir, MountConfig, UpperDir, ValidatedMountConfig};
+    use std::collections::BTreeSet;
     use std::fs;
     use tempfile::TempDir;
 
@@ -158,6 +159,7 @@ mod tests {
         let mount_config = MountConfig {
             lower_dirs: vec![lower_dir],
             upper_dir,
+            allowed_masked_files: BTreeSet::new(),
         };
 
         mount_config.validate().unwrap()
@@ -206,6 +208,7 @@ mod tests {
         let mount_config = MountConfig {
             lower_dirs: vec![lower_dir],
             upper_dir,
+            allowed_masked_files: BTreeSet::new(),
         };
 
         let validated_config = mount_config.validate().unwrap();
@@ -242,6 +245,7 @@ mod tests {
         let mount_config = MountConfig {
             lower_dirs: vec![lower_dir],
             upper_dir,
+            allowed_masked_files: BTreeSet::new(),
         };
 
         let validated_config = mount_config.validate().unwrap();
@@ -284,6 +288,7 @@ mod tests {
         let mount_config = MountConfig {
             lower_dirs: vec![lower_dir],
             upper_dir,
+            allowed_masked_files: BTreeSet::new(),
         };
 
         let validated_config = mount_config.validate().unwrap();
