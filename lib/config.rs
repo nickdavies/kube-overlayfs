@@ -53,13 +53,13 @@ pub struct LowerDir {
 }
 
 fn enforce_relative(volume: &Path, subdir: Option<&PathBuf>) -> Result<(), ValidationError> {
-    if let Some(subdir) = subdir {
-        if subdir.is_absolute() {
-            return Err(ValidationError::NonRelative(
-                subdir.to_path_buf(),
-                volume.to_path_buf(),
-            ));
-        }
+    if let Some(subdir) = subdir
+        && subdir.is_absolute()
+    {
+        return Err(ValidationError::NonRelative(
+            subdir.to_path_buf(),
+            volume.to_path_buf(),
+        ));
     }
     Ok(())
 }

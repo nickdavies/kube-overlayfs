@@ -88,12 +88,12 @@ fn main() -> Result<()> {
 
     // Mount the overlay
     if let Err(e) = manager.mount() {
-        if options.show_dmesg.unwrap_or(false) {
-            if let overlay_mount::ManagerError::MountError(_, Ok(dmesg_lines)) = &e {
-                eprintln!("Recent dmesg output:");
-                for line in dmesg_lines {
-                    eprintln!("  {line}");
-                }
+        if options.show_dmesg.unwrap_or(false)
+            && let overlay_mount::ManagerError::MountError(_, Ok(dmesg_lines)) = &e
+        {
+            eprintln!("Recent dmesg output:");
+            for line in dmesg_lines {
+                eprintln!("  {line}");
             }
         }
         return Err(anyhow::Error::from(e).context("Failed to mount overlay"));
